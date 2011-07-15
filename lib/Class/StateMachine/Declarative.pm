@@ -115,7 +115,9 @@ Class::StateMachine::Declarative - Perl extension for blah blah blah
       happy    => { transitions => { on_knocked_down => 'injuried',
                                      on_kicked       => 'angry' } },
       injuried => { transitions => { on_sleep        => 'happy' } },
-      angry    => { transitions => { on_feed         => 'happy',
+      angry    => { 'enter+'    => sub { shift->bark },
+                    'leave+'    => sub { shift->bark },
+                    transitions => { on_feed         => 'happy',
                                      on_knocked_down => 'injuried' } } };
 
   sub new {
@@ -125,7 +127,6 @@ Class::StateMachine::Declarative - Perl extension for blah blah blah
     Class::StateMachine::bless $self, $class, 'happy';
     $self;
   }
-
 
   # events (mehotds) that do not cause a state change:
   sub on_touched_head : OnState(happy) { shift->move_tail }

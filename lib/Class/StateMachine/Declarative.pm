@@ -10,6 +10,7 @@ use strict;
 use warnings;
 
 use Carp;
+BEGIN { our @CARP_NOT = 'Class::StateMachine' }
 use Class::StateMachine;
 use mro;
 

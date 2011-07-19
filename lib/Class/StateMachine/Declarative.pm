@@ -10,7 +10,7 @@ use strict;
 use warnings;
 
 use Carp;
-BEGIN { our @CARP_NOT = 'Class::StateMachine' }
+BEGIN { our @CARP_NOT = qw(Class::StateMachine Class::StateMachine::Private) }
 use Class::StateMachine;
 use mro;
 
@@ -21,7 +21,7 @@ sub import {
     init_class(scalar(caller), @_);
 }
 
-my $usage = 'usage: use Class::StateMachine::Declarative state => { enter_state => action, transitions => { event => final_state, ...}, ... }, state => { ... }, ...;';
+my $usage = 'usage: use Class::StateMachine::Declarative state => { enter => action, leave => action, transitions => { event => final_state, ...}, ignore => [ event, ...] }, state => { ... }, ...;';
 
 sub _action {
     my ($action, $call_next) = @_;
@@ -88,6 +88,10 @@ sub init_class {
                                                              $state);
                      }
                  }
+                 when ('ignore') {
+                     ref $arg eq 'ARRAY' or croak "$arg is not an array reference, $usage";
+                     Class::StateMachine::install_method($class, $_, sub {}, $state) for @$arg;
+                 }
                  default {
                      croak "invalid option '$type', $usage";
                  }
@@ -119,7 +123,8 @@ Class::StateMachine::Declarative - Perl extension for blah blah blah
       angry    => { 'enter+'    => sub { shift->bark },
                     'leave+'    => sub { shift->bark },
                     transitions => { on_feed         => 'happy',
-                                     on_knocked_down => 'injuried' } } };
+                                     on_knocked_down => 'injuried' },
+                    ignore      => ['on_kicked'] };
 
   sub new {
     my $class = shift;

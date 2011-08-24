@@ -24,41 +24,23 @@ sub import {
 my $usage = 'usage: use Class::StateMachine::Declarative state => { enter => action, leave => action, transitions => { event => final_state, ...}, ignore => [ event, ...] }, state => { ... }, ...;';
 
 sub _action {
-    my ($action, $call_next) = @_;
+    my $action = shift;
     given (ref $action) {
         when ('CODE') {
-            if ($call_next) {
-                return sub {
-                    my $self = $_[0];
-                    $action->(@_);
-                    $self->maybe::next::method;
-                };
-            }
-            else { return $action }
+            return $action;
         }
         when ('') {
             if ($action =~ /^\w+(?:::\w)*$/) {
-                if ($call_next) {
-                    return sub {
-                        my $self = shift;
-                        $self->$action;
-                        $self->maybe::next::method;
-                    };
-                }
-                else {
-                    return sub { shift->$action };
-                }
+                return sub { shift->$action };
             }
             else {
                 my ($pkg, $fn, $line) = caller(1);
-                my $maybe = ($call_next ? '; $self->maybe::next::method' : '');
                 my $sub = _clean_eval <<SUB;
 sub {
     package $pkg;
     my \$self = shift;
     # line $line $fn
     $action
-    $maybe
 }
 SUB
                 die $@ if $@;
@@ -73,12 +55,13 @@ SUB
 
 sub init_class {
      my ($class, %states) = @_;
-     while (my ($state, $decl) = each %states) {
-         ref $decl eq 'HASH' or croak "$decl is not a hash reference, $usage";
+
+     for my $state (keys %states) {
+         my $decl = _resolve_bases($state, \%states);
          while (my ($type, $arg) = each %$decl) {
              given ($type) {
-                 when(/^(enter|leave)(\+?)$/) {
-                     Class::StateMachine::install_method($class, "${1}_state", _action($arg, $2), $state);
+                 when([qw(enter leave)]) {
+                     Class::StateMachine::install_method($class, "${_}_state", _action($arg), $state);
                  }
                  when ('transitions') {
                      ref $arg eq 'HASH' or croak "$arg is not a hash reference, $usage";
@@ -92,12 +75,43 @@ sub init_class {
                      ref $arg eq 'ARRAY' or croak "$arg is not an array reference, $usage";
                      Class::StateMachine::install_method($class, $_, sub {}, $state) for @$arg;
                  }
+                 when ([qw(base _resolved)]) {};
                  default {
                      croak "invalid option '$type', $usage";
                  }
              }
          }
      }
+}
+
+sub _resolve_bases {
+    my ($state, $states) = @_;
+    my $decl = $states->{$state};
+    my $base = $decl->{base} // ($state =~ m|^(.*)/|)[0];
+    return $decl unless (defined $base and !$decl->{_resolved});
+
+    my $mix = _resolve_bases($base, $states);
+    $decl = _mix($decl, $mix);
+    $decl->{_resolved} = 1;
+
+    #use Data::Dumper;
+    #print Dumper({decl => $decl, state => $state, base => $base, mix => $mix});
+
+    $states->{$state} = $decl;
+}
+
+sub _mix {
+    my ($orig, $mix) = @_;
+    my %new = %{$orig//{}};
+    while (my ($k, $v) = each %$mix) {
+        if (ref($v) eq 'HASH') {
+            $new{$k} = _mix($new{$k}, $v);
+        }
+        else {
+            $new{$k} //= $v;
+        }
+    }
+    return \%new;
 }
 
 1;

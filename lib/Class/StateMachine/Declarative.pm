@@ -57,61 +57,37 @@ sub init_class {
      my ($class, %states) = @_;
 
      for my $state (keys %states) {
-         my $decl = _resolve_bases($state, \%states);
-         while (my ($type, $arg) = each %$decl) {
-             given ($type) {
-                 when([qw(enter leave)]) {
-                     Class::StateMachine::install_method($class, "${_}_state", _action($arg), $state);
-                 }
-                 when ('transitions') {
-                     ref $arg eq 'HASH' or croak "$arg is not a hash reference, $usage";
-                     while (my ($event, $final) = each %$arg) {
-                         Class::StateMachine::install_method($class, $event,
-                                                             sub { shift->state($final) },
-                                                             $state);
+         my $decl = $states{$state};
+         if (exists $decl->{jump}) {
+             keys %$decl > 1 and croak "jump declaration can not be mixed with other keys";
+             my $target_state = $decl->{jump};
+             Class::StateMachine::install_method($class, 'enter_state', sub { shift->state($target_state) }, $state);
+         }
+         else {
+             while (my ($type, $arg) = each %$decl) {
+                 given ($type) {
+                     when([qw(enter leave)]) {
+                         Class::StateMachine::install_method($class, "${_}_state", _action($arg), $state);
                      }
-                 }
-                 when ('ignore') {
-                     ref $arg eq 'ARRAY' or croak "$arg is not an array reference, $usage";
-                     Class::StateMachine::install_method($class, $_, sub {}, $state) for @$arg;
-                 }
-                 when ([qw(base _resolved)]) {};
-                 default {
-                     croak "invalid option '$type', $usage";
+                     when ('transitions') {
+                         ref $arg eq 'HASH' or croak "$arg is not a hash reference, $usage";
+                         while (my ($event, $final) = each %$arg) {
+                             Class::StateMachine::install_method($class, $event,
+                                                                 sub { shift->state($final) },
+                                                                 $state);
+                         }
+                     }
+                     when ('ignore') {
+                         ref $arg eq 'ARRAY' or croak "$arg is not an array reference, $usage";
+                         Class::StateMachine::install_method($class, $_, sub {}, $state) for @$arg;
+                     }
+                     default {
+                         croak "invalid option '$type', $usage";
+                     }
                  }
              }
          }
      }
-}
-
-sub _resolve_bases {
-    my ($state, $states) = @_;
-    my $decl = $states->{$state};
-    my $base = $decl->{base} // ($state =~ m|^(.*)/|)[0];
-    return $decl unless (defined $base and !$decl->{_resolved});
-
-    my $mix = _resolve_bases($base, $states);
-    $decl = _mix($decl, $mix);
-    $decl->{_resolved} = 1;
-
-    #use Data::Dumper;
-    #print Dumper({decl => $decl, state => $state, base => $base, mix => $mix});
-
-    $states->{$state} = $decl;
-}
-
-sub _mix {
-    my ($orig, $mix) = @_;
-    my %new = %{$orig//{}};
-    while (my ($k, $v) = each %$mix) {
-        if (ref($v) eq 'HASH') {
-            $new{$k} = _mix($new{$k}, $v);
-        }
-        else {
-            $new{$k} //= $v;
-        }
-    }
-    return \%new;
 }
 
 1;

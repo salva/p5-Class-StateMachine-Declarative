@@ -77,9 +77,17 @@ sub init_class {
                                                                  $state);
                          }
                      }
+                     when ('delay') {
+                         ref $arg eq 'ARRAY' or croak "$arg is not an array reference, $usage";
+                         Class::StateMachine::install_method($class, $_,
+                                                             sub { shift->delay_until_next_state },
+                                                             $state)
+                                 for @$arg
+                     }
                      when ('ignore') {
                          ref $arg eq 'ARRAY' or croak "$arg is not an array reference, $usage";
-                         Class::StateMachine::install_method($class, $_, sub {}, $state) for @$arg;
+                         Class::StateMachine::install_method($class, $_, sub {}, $state)
+                                 for @$arg;
                      }
                      default {
                          croak "invalid option '$type', $usage";

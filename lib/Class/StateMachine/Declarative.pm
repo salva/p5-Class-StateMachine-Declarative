@@ -10,89 +10,46 @@ use strict;
 use warnings;
 
 use Carp;
+BEGIN { our @CARP_NOT = qw(Class::StateMachine Class::StateMachine::Private) }
 use Class::StateMachine;
 use mro;
 
-require parent;
+my $dump = exists $ENV{CLASS_STATEMACHINE_DECLARATIVE_DUMPFILE};
+my %dump;
 
-sub import {
-    shift;
-    init_class(scalar(caller), @_);
-}
-
-my $usage = 'usage: use Class::StateMachine::Declarative state => { enter_state => action, transitions => { event => final_state, ...}, ... }, state => { ... }, ...;';
-
-sub _action {
-    my ($action, $call_next) = @_;
-    given (ref $action) {
-        when ('CODE') {
-            if ($call_next) {
-                return sub {
-                    my $self = $_[0];
-                    $action->(@_);
-                    $self->maybe::next::method;
-                };
-            }
-            else { return $action }
-        }
-        when ('') {
-            if ($action =~ /^\w+(?:::\w)*$/) {
-                if ($call_next) {
-                    return sub {
-                        my $self = shift;
-                        $self->$action;
-                        $self->maybe::next::method;
-                    };
-                }
-                else {
-                    return sub { shift->$action };
-                }
-            }
-            else {
-                my ($pkg, $fn, $line) = caller(1);
-                my $maybe = ($call_next ? '; $self->maybe::next::method' : '');
-                my $sub = _clean_eval <<SUB;
-sub {
-    package $pkg;
-    my \$self = shift;
-    # line $line $fn
-    $action
-    $maybe
-}
-SUB
-                die $@ if $@;
-                return $sub;
-            }
-        }
-        default {
-            croak "$action is not a valid action";
-        }
+END {
+    if ($dump) {
+        open my $fh, ">", $ENV{CLASS_STATEMACHINE_DECLARATIVE_DUMPFILE} or return;
+        require Data::Dumper;
+        print $fh Data::Dumper->Dump([\%dump], [qw(*state_machines)]);
+        close $fh;
     }
 }
 
-sub init_class {
-     my ($class, %states) = @_;
-     while (my ($state, $decl) = each %states) {
-         ref $decl eq 'HASH' or croak "$decl is not a hash reference, $usage";
-         while (my ($type, $arg) = each %$decl) {
-             given ($type) {
-                 when(/^(enter|leave)(\+?)$/) {
-                     Class::StateMachine::install_method($class, "${1}_state", _action($arg, $2), $state);
-                 }
-                 when ('transitions') {
-                     ref $arg eq 'HASH' or croak "$arg is not a hash reference, $usage";
-                     while (my ($event, $final) = each %$arg) {
-                         Class::StateMachine::install_method($class, $event,
-                                                             sub { shift->state($final) },
-                                                             $state);
-                     }
-                 }
-                 default {
-                     croak "invalid option '$type', $usage";
-                 }
-             }
-         }
-     }
+sub import {
+    shift;
+    _init_class(scalar(caller), @_);
+}
+
+sub _init_class {
+    my $class = shift;
+    my $builder = Class::StateMachine::Declarative::Builder->new($class);
+    _init_states($builder, undef, @_);
+}
+
+sub _init_states {
+    my ($builder, $parent, @states) = @_;
+    while (@states) {
+        my $name = shift @states;
+        my %decl = %{shift(@states)};
+        my %args = map { $_ => delete $decl{$_} } qw(enter leave delay ignore transitions);
+        my $substates = delete $decl{substates};
+        %decl and croak "bad state declaration argument(s) (".join(", ", keys %decl).")";
+        my $state = $builder->new_state($name, $parent, %args);
+        _init_states($builder, $states, @$substates);
+    }
+    $builder->resolve_transitions;
+    $builder->generate;
 }
 
 1;

@@ -15,7 +15,6 @@ sub _debug {
     warn "@_\n" if $debug and $n;
 }
 
-
 sub new {
     my ($class, $target_class) = @_;
     my $top = Class::StateMachine::Declarative::Builder::State->_new;
@@ -44,7 +43,7 @@ sub _ref_to_pair_list {
 
 sub _ref_is_ordered_list {
     my $ref = shift;
-    local ($@, $SIG{__DIE});
+    local ($@, $SIG{__DIE__});
     eval { @$ref || 1 };
 }
 
@@ -57,7 +56,10 @@ sub _ensure_list {
 sub parse_state_declarations {
     my $self = shift;
     $self->_parse_state_declarations($self->{top}, @_);
+    $self->_merge_any;
+    $self->_resolve_advances($self->{top});
     $self->_resolve_transitions($self->{top}, []);
+    # $self->_propagate_transitions($self->{top});
 }
 
 sub _parse_state_declarations {
@@ -102,6 +104,10 @@ sub _handle_attr_jump {
     $state->{jump} = $v;
 }
 
+sub _handle_attr_advance_when {
+    my ($self, $state, $v) = @_;
+    $state->{advance_when} = $v;
+}
 
 sub _handle_attr_delay {
     my ($self, $state, $v) = @_;
@@ -125,15 +131,46 @@ sub _handle_attr_transitions {
 
 sub _handle_attr_substates {
     my ($self, $state, $v) = @_;
+    $state->{full_name} eq '/__any__' and $self->_bad_def($state, "pseudo state __any__ can not contain substates");
     $self->_parse_state_declarations($state, _ref_to_pair_list($v));
-    if (_ref_is_ordered_list($v)) {
-        $state->{substates_are_ordered} = 1;
+    $state->{substates_are_ordered} = _ref_is_ordered_list($v);
+}
+
+sub _merge_any {
+    my $self = shift;
+    my $top = $self->{top};
+    $top->{name} = '__any__';
+    if (defined(my $any = delete $self->{states}{'/__any__'})) {
+        my $ss = $self->{top}{substates};
+        @$ss = grep { $_->{name} ne '__any__' } @$ss;
+        $top->{$_} //= $any->{$_} for keys %$any;
+    }
+}
+
+sub _resolve_advances {
+    my ($self, $state, $event) = @_;
+    my @ss = @{$state->{substates}};
+    if (@ss) {
+        $event = $state->{advance_when} // $event;
+        $self->_resolve_advances($_, $event) for @ss;
+        if (defined $event) {
+            my $current_state = shift @ss;
+            while (@ss) {
+                my $next_state = shift @ss;
+                unless (defined ($current_state->{transitions}{$event})) {
+                    $state->{substates_are_ordered} or
+                        $self->_bad_def($state, "advance_when defined but substates are not ordered");
+                    $current_state->{transitions}{$event} = $next_state->{full_name};
+                }
+                $current_state = $next_state;
+            }
+        }
     }
 }
 
 sub _resolve_transitions {
     my ($self, $state, $path) = @_;
-    my @path = (@$path, $state->{name});
+    my @path = (@$path, $state->{short_name});
     my %transitions_abs;
     my %transitions_rev;
     while (my ($event, $target) = each %{$state->{transitions}}) {
@@ -144,10 +181,23 @@ sub _resolve_transitions {
     $state->{transitions_abs} = \%transitions_abs;
     $state->{transitions_rev} = \%transitions_rev;
 
-    for my $substate (@{$state->{substates}}) {
-        $self->_resolve_transitions($substate, \@path);
-    }
+    my $ss = $state->{substates};
+    my $jump = $state->{jump};
+    $jump //= $ss->[0]{full_name} if @$ss;
+    $state->{jump_abs} = $self->_resolve_target($jump, \@path) if defined $jump;
+
+    $self->_resolve_transitions($_, \@path) for @$ss;
 }
+
+# sub _propagate_transitions {
+#     my ($self, $state) = @_;
+#     my $t = $state->{transitions_abs};
+#     for my $ss (@{$state->{substates}}) {
+#         my $ss_t = $ss->{transitions_abs};
+#         $ss_t->{$_} //= $t->{$_} for keys %$t;
+#         $self->_propagate_transitions($ss);
+#     }
+# }
 
 sub _resolve_target {
     my ($self, $target, $path) = @_;
@@ -177,7 +227,6 @@ sub _resolve_target {
 }
 
 my $ignore_cb = sub {};
-my $goto_next_state = sub { $_[0]->state($_[0]->next_state) };
 
 sub generate_class {
     my $self = shift;
@@ -208,17 +257,11 @@ sub generate_class {
         }
 
         while (my ($target, $events) = each %{$state->{transitions_rev}}) {
-            my $method;
-            if ($target eq '__next__') {
-                $method = $goto_next_state;
-            }
-            else {
-                my $target_state = $self->{states}{$target};
-                $method = $target_state->{come_here_method} //= do {
-                    my $target_name = $target_state->{name};
-                    sub { shift->state($target_name) }
-                };
-            }
+            my $target_state = $self->{states}{$target};
+            my $method = $target_state->{come_here_method} //= do {
+                my $target_name = $target_state->{name};
+                sub { shift->state($target_name) }
+            };
             Class::StateMachine::install_method($class, $_, $method, $name) for @$events;
         }
 
@@ -246,7 +289,8 @@ package Class::StateMachine::Declarative::Builder::State;
 
 sub _new {
     my ($class, $name, $parent) = @_;
-    my $full_name = ($parent ? "$parent->{full_name}/$name" : $name // "");
+    $name //= '';
+    my $full_name = ($parent ? "$parent->{full_name}/$name" : $name);
     my $final_name = $full_name;
     $final_name =~ s|^/+||;
     my $state = { short_name => $name,
@@ -259,6 +303,7 @@ sub _new {
                   delay => [] };
     bless $state, $class;
     push @{$parent->{substates}}, $state if $parent;
+    Class::StateMachine::Declarative::Builder::_debug(32, "weaken parent for state $full_name");
     Scalar::Util::weaken($state->{parent});
     $state;
 }

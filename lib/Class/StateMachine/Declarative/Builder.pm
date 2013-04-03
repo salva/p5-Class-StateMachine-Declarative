@@ -119,6 +119,11 @@ sub _handle_attr_ignore {
     push @{$state->{ignore}}, _ensure_list($v);
 }
 
+sub _handle_attr_secondary {
+    my ($self, $state, $v) = @_;
+    $state->{secondary} = 1 if $v;
+}
+
 sub _handle_attr_transitions {
     my ($self, $state, $v) = @_;
     my @transitions = _ref_to_pair_list($v);
@@ -154,15 +159,15 @@ sub _resolve_advances {
         $event = $state->{advance_when} // $event;
         $self->_resolve_advances($_, $event) for @ss;
         if (defined $event) {
-            my $current_state = shift @ss;
             while (@ss) {
-                my $next_state = shift @ss;
+                my $current_state = shift @ss;
                 unless (defined ($current_state->{transitions}{$event})) {
                     $state->{substates_are_ordered} or
                         $self->_bad_def($state, "advance_when defined but substates are not ordered");
-                    $current_state->{transitions}{$event} = $next_state->{full_name};
+                    if (my ($next_state) = grep { not $_->{secondary} } @ss) {
+                        $current_state->{transitions}{$event} = $next_state->{full_name};
+                    }
                 }
-                $current_state = $next_state;
             }
         }
     }
@@ -181,9 +186,17 @@ sub _resolve_transitions {
     $state->{transitions_abs} = \%transitions_abs;
     $state->{transitions_rev} = \%transitions_rev;
 
-    my $ss = $state->{substates};
     my $jump = $state->{jump};
-    $jump //= $ss->[0]{full_name} if @$ss;
+    my $ss = $state->{substates};
+    if (not defined $jump and not defined $state->{enter} and @$ss) {
+        if (my ($main) = grep { not $_->{secondary} } @$ss) {
+            $jump //= $main->{full_name};
+        }
+        else {
+            $self->_bad_def($state, "all the substates are secondary");
+        }
+    }
+
     $state->{jump_abs} = $self->_resolve_target($jump, \@path) if defined $jump;
 
     $self->_resolve_transitions($_, \@path) for @$ss;

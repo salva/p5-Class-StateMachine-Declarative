@@ -30,23 +30,8 @@ sub _bad_def {
     croak "@msg on definition of state '$state->{name}' for class '$self->{class}'";
 }
 
-sub _ref_to_pair_list {
-    my $ref = shift;
-    my @l;
-    do {
-        local ($@, $SIG{__DIE__});
-        eval { @l = @$ref; 1 } or eval { @l = %$ref; 1 }
-    } or croak "ARRAY or HASH ref expected";
-    @l & 1 and croak "odd number of elements in list";
-    @l;
-}
-
-sub _ref_is_ordered_list {
-    my $ref = shift;
-    local ($@, $SIG{__DIE__});
-    eval { @$ref || 1 };
-}
-
+sub _is_hash  { UNIVERSAL::isa($_[0], 'HASH') }
+sub _is_array { UNIVERSAL::isa($_[0], 'ARRAY') }
 
 sub _ensure_list {
     my $ref = shift;
@@ -66,9 +51,10 @@ sub _parse_state_declarations {
     my $self = shift;
     my $parent = shift;
     while (@_) {
-        my $name = shift;
-        my $decl = shift // {};
-        $self->_add_state($name, $parent, _ref_to_pair_list($decl));
+        my $name = shift // $self->_bad_def($parent, "undef is not valid as a state name");
+        my $decl = shift;
+        _is_hash($decl) or $self->_bad_def($parent, "HASH expected for substate '$name' declaration");
+        $self->_add_state($name, $parent, %$decl);
     }
 }
 
@@ -126,7 +112,8 @@ sub _handle_attr_secondary {
 
 sub _handle_attr_transitions {
     my ($self, $state, $v) = @_;
-    my @transitions = _ref_to_pair_list($v);
+    _is_hash($v) or $self->_bad_def($state, "HASH expected for transitions declaration");
+    my @transitions = %$v;
     while (@transitions) {
         my $event = shift @transitions;
         my $target = shift @transitions;
@@ -137,8 +124,8 @@ sub _handle_attr_transitions {
 sub _handle_attr_substates {
     my ($self, $state, $v) = @_;
     $state->{full_name} eq '/__any__' and $self->_bad_def($state, "pseudo state __any__ can not contain substates");
-    $self->_parse_state_declarations($state, _ref_to_pair_list($v));
-    $state->{substates_are_ordered} = _ref_is_ordered_list($v);
+    _is_array($v) or $self->_bad_def($state, "ARRAY expected for substate declarations");
+    $self->_parse_state_declarations($state, @$v);
 }
 
 sub _merge_any {
@@ -162,8 +149,6 @@ sub _resolve_advances {
             while (@ss) {
                 my $current_state = shift @ss;
                 unless (defined ($current_state->{transitions}{$event})) {
-                    $state->{substates_are_ordered} or
-                        $self->_bad_def($state, "advance_when defined but substates are not ordered");
                     if (my ($next_state) = grep { not $_->{secondary} } @ss) {
                         $current_state->{transitions}{$event} = $next_state->{full_name};
                     }
@@ -248,16 +233,28 @@ sub generate_class {
         my $name = $state->{name};
         my $parent = $state->{parent};
         if ($parent and $parent != $self->{top}) {
-            Class::StateMachine::set_state_isa($class, $state, $parent->{name});
+            Class::StateMachine::set_state_isa($class, $name, $parent->{name});
         }
 
         for my $when ('enter', 'leave') {
-            my $action = $state->{$when};
-            Class::StateMachine::install_method($class,
-                                                "${when}_state",
-                                                sub { shift->$action },
-                                                $name);
+            if (defined (my $action = $state->{$when})) {
+                Class::StateMachine::install_method($class,
+                                                    "${when}_state",
+                                                    sub { shift->$action },
+                                                    $name);
+            }
         }
+
+        if (not defined $state->{enter} and $state->{name} ne '__any__') {
+            if (defined (my $jump = $state->{jump_abs})) {
+                my $jump_name = $self->{states}{$jump}{name};
+                Class::StateMachine::install_method($class,
+                                                    'enter_state',
+                                                    sub { shift->state($jump_name) },
+                                                    $name);
+            }
+        }
+
         for my $delay (@{$state->{delay}}) {
             my $event = $delay;
             Class::StateMachine::install_method($class,
@@ -276,24 +273,6 @@ sub generate_class {
                 sub { shift->state($target_name) }
             };
             Class::StateMachine::install_method($class, $_, $method, $name) for @$events;
-        }
-
-        my @ss = @{$state->{substates}};
-        if ($state->{substates_are_ordered}) {
-            my $current = shift @ss;
-            while (defined(my $next = shift @ss)) {
-                my $next_state = $next->{name};
-                Class::StateMachine::install_method($class, 'next_state', sub { $next_state }, $current->{name});
-                $current = $next_state;
-            }
-        }
-        else {
-            for my $ss (@ss) {
-                my $state_name = $ss->{name};
-                Class::StateMachine::install_method($class, 'next_state',
-                                                    sub { croak "next state not defined in state '$state_name'" },
-                                                    $ss->{name});
-            }
         }
     }
 }

@@ -60,9 +60,13 @@ sub _parse_state_declarations {
 
 sub _add_state {
     my ($self, $name, $parent, @decl) = @_;
-
+    my $secondary;
+    if ($name = /^\((.*)\)$/) {
+        $name = $1;
+        $secondary = 1;
+    }
     my $state = Class::StateMachine::Declarative::Builder::State->_new($name, $parent);
-
+    $self->_handle_attr_secondary($state, 1) if $secondary;
     while (@decl) {
         my $k = shift @decl;
         my $method = $self->can("_handle_attr_$k") or $self->_bad_def($state, "bad declaration '$k'");
@@ -90,9 +94,9 @@ sub _handle_attr_jump {
     $state->{jump} = $v;
 }
 
-sub _handle_attr_advance_when {
+sub _handle_attr_advance {
     my ($self, $state, $v) = @_;
-    $state->{advance_when} = $v;
+    $state->{advance} = $v;
 }
 
 sub _handle_attr_delay {
@@ -107,7 +111,7 @@ sub _handle_attr_ignore {
 
 sub _handle_attr_secondary {
     my ($self, $state, $v) = @_;
-    $state->{secondary} = 1 if $v;
+    $state->{secondary} = !!$v;
 }
 
 sub _handle_attr_transitions {
@@ -143,7 +147,7 @@ sub _resolve_advances {
     my ($self, $state, $event) = @_;
     my @ss = @{$state->{substates}};
     if (@ss) {
-        $event = $state->{advance_when} // $event;
+        $event = $state->{advance} // $event;
         $self->_resolve_advances($_, $event) for @ss;
         if (defined $event) {
             while (@ss) {
@@ -295,7 +299,6 @@ sub _new {
                   delay => [] };
     bless $state, $class;
     push @{$parent->{substates}}, $state if $parent;
-    Class::StateMachine::Declarative::Builder::_debug(32, "weaken parent for state $full_name");
     Scalar::Util::weaken($state->{parent});
     $state;
 }

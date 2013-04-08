@@ -61,7 +61,7 @@ sub _parse_state_declarations {
 sub _add_state {
     my ($self, $name, $parent, @decl) = @_;
     my $secondary;
-    if ($name = /^\((.*)\)$/) {
+    if ($name =~ /^\((.*)\)$/) {
         $name = $1;
         $secondary = 1;
     }
@@ -266,7 +266,7 @@ sub generate_class {
                                                 sub { shift->delay_until_next_state($event) },
                                                 $name);
         }
-        for my $ignore (@{$state->{delay}}) {
+        for my $ignore (@{$state->{ignore}}) {
             Class::StateMachine::install_method($class, $ignore, $ignore_cb, $name);
         }
 

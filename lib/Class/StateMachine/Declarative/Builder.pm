@@ -140,6 +140,7 @@ sub _merge_any {
         my $ss = $self->{top}{substates};
         @$ss = grep { $_->{name} ne '__any__' } @$ss;
         $top->{$_} //= $any->{$_} for keys %$any;
+        $top->{$_} = $any->{$_} for qw(ignore delay);
     }
 }
 
@@ -152,10 +153,8 @@ sub _resolve_advances {
         if (defined $event) {
             while (@ss) {
                 my $current_state = shift @ss;
-                unless (defined ($current_state->{transitions}{$event})) {
-                    if (my ($next_state) = grep { not $_->{secondary} } @ss) {
-                        $current_state->{transitions}{$event} = $next_state->{full_name};
-                    }
+                if (my ($next_state) = grep { not $_->{secondary} } @ss) {
+                    $current_state->{transitions}{$event} //= $next_state->{full_name};
                 }
             }
         }
@@ -232,53 +231,61 @@ my $ignore_cb = sub {};
 
 sub generate_class {
     my $self = shift;
+    $self->_generate_state($self->{top});
+}
+
+sub _generate_state {
+    my ($self, $state) = @_;
     my $class = $self->{class};
-    while (my ($full_name, $state) = each %{$self->{states}}) {
-        my $name = $state->{name};
-        my $parent = $state->{parent};
-        if ($parent and $parent != $self->{top}) {
-            Class::StateMachine::set_state_isa($class, $name, $parent->{name});
-        }
+    my $name = $state->{name};
+    my $parent = $state->{parent};
+    my $parent_name = ($parent ? $parent->{name} : undef);
+    _debug(16, "generating subs for class $class, state $name, parent: ". ($parent_name // '<undef>'));
 
-        for my $when ('enter', 'leave') {
-            if (defined (my $action = $state->{$when})) {
-                Class::StateMachine::install_method($class,
-                                                    "${when}_state",
-                                                    sub { shift->$action },
-                                                    $name);
-            }
-        }
+    if ($parent and $parent_name ne '__any__') {
+        Class::StateMachine::set_state_isa($class, $name, $parent_name);
+    }
 
-        if (not defined $state->{enter} and $state->{name} ne '__any__') {
-            if (defined (my $jump = $state->{jump_abs})) {
-                my $jump_name = $self->{states}{$jump}{name};
-                Class::StateMachine::install_method($class,
-                                                    'enter_state',
-                                                    sub { shift->state($jump_name) },
-                                                    $name);
-            }
-        }
-
-        for my $delay (@{$state->{delay}}) {
-            my $event = $delay;
+    for my $when ('enter', 'leave') {
+        if (defined (my $action = $state->{$when})) {
             Class::StateMachine::install_method($class,
-                                                $event,
-                                                sub { shift->delay_until_next_state($event) },
+                                                "${when}_state",
+                                                sub { shift->$action },
                                                 $name);
         }
-        for my $ignore (@{$state->{ignore}}) {
-            Class::StateMachine::install_method($class, $ignore, $ignore_cb, $name);
-        }
+    }
 
-        while (my ($target, $events) = each %{$state->{transitions_rev}}) {
-            my $target_state = $self->{states}{$target};
-            my $method = $target_state->{come_here_method} //= do {
-                my $target_name = $target_state->{name};
-                sub { shift->state($target_name) }
-            };
-            Class::StateMachine::install_method($class, $_, $method, $name) for @$events;
+    if (!defined $state->{enter} and $name ne '__any__') {
+        if (defined (my $jump = $state->{jump_abs})) {
+            my $jump_name = $self->{states}{$jump}{name};
+            Class::StateMachine::install_method($class,
+                                                'enter_state',
+                                                sub { shift->state($jump_name) },
+                                                $name);
         }
     }
+
+    for my $delay (@{$state->{delay}}) {
+        my $event = $delay;
+        Class::StateMachine::install_method($class,
+                                            $event,
+                                            sub { shift->delay_until_next_state($event) },
+                                            $name);
+    }
+    for my $ignore (@{$state->{ignore}}) {
+        Class::StateMachine::install_method($class, $ignore, $ignore_cb, $name);
+    }
+
+    while (my ($target, $events) = each %{$state->{transitions_rev}}) {
+        my $target_state = $self->{states}{$target};
+        my $method = $target_state->{come_here_method} //= do {
+            my $target_name = $target_state->{name};
+            sub { shift->state($target_name) }
+        };
+        Class::StateMachine::install_method($class, $_, $method, $name) for @$events;
+    }
+
+    $self->_generate_state($_) for @{$state->{substates}};
 }
 
 package Class::StateMachine::Declarative::Builder::State;

@@ -79,6 +79,24 @@ sub _add_state {
     $state;
 }
 
+sub _ensure_event_is_free {
+    my ($self, $state, $event, $current) = @_;
+    my $seen;
+    for (qw(transitions on)) {
+        $seen = $_ if defined $state->{$_}{$event};
+    }
+    for (qw(delay ignore)) {
+        $seen = $_ if grep $_ eq $event, @{$state->{$_}};
+    }
+    if ($seen) {
+        unless (defined $current) {
+            $current = (caller 1)[3];
+            $current =~ s/^_handle_attr_//;
+        }
+        $seen and $self->_bad_def($state, "event '$event' appears on '$seen' and '$current' declarations");
+    }
+}
+
 sub _handle_attr_enter {
     my ($self, $state, $v) = @_;
     $state->{enter} = $v;
@@ -101,12 +119,16 @@ sub _handle_attr_advance {
 
 sub _handle_attr_delay {
     my ($self, $state, $v) = @_;
-    push @{$state->{delay}}, _ensure_list($v);
+    my @events = _ensure_list($v);
+    $self->_ensure_event_is_free($state, $_) for @events;
+    push @{$state->{delay}}, @events;
 }
 
 sub _handle_attr_ignore {
     my ($self, $state, $v) = @_;
-    push @{$state->{ignore}}, _ensure_list($v);
+    my @events = _ensure_list($v);
+    $self->_ensure_event_is_free($state, $_) for @events;
+    push @{$state->{ignore}}, @events;
 }
 
 sub _handle_attr_secondary {
@@ -114,14 +136,33 @@ sub _handle_attr_secondary {
     $state->{secondary} = !!$v;
 }
 
+sub _handle_attr_before {
+    my ($self, $state, $v) = @_;
+    _is_hash($v) or $self->_bad_def($state, "HASH expected for 'before' declaration");
+    while (my ($event, $action) = each %$v) {
+        $state->{before}{$event} = $action if defined $action;
+    }
+}
+
+sub _handle_attr_on {
+    my ($self, $state, $v) = @_;
+    _is_hash($v) or $self->_bad_def($state, "HASH expected for 'on' declaration");
+    while (my ($event, $action) = each %$v) {
+        if (defined $action) {
+            $self->_ensure_event_is_free($state, $event);
+            $state->{before}{$event} = $action;
+        }
+    }
+}
+
 sub _handle_attr_transitions {
     my ($self, $state, $v) = @_;
-    _is_hash($v) or $self->_bad_def($state, "HASH expected for transitions declaration");
-    my @transitions = %$v;
-    while (@transitions) {
-        my $event = shift @transitions;
-        my $target = shift @transitions;
-        $state->{transitions}{$event} = $target if defined $target;
+    _is_hash($v) or $self->_bad_def($state, "HASH expected for 'transitions' declaration");
+    while (my ($event, $target) = each %$v) {
+        if (defined $target) {
+            $self->_ensure_event_is_free($state, $event);
+            $state->{transitions}{$event} = $target;
+        }
     }
 }
 
@@ -139,6 +180,7 @@ sub _merge_any {
     if (defined(my $any = delete $self->{states}{'/__any__'})) {
         my $ss = $self->{top}{substates};
         @$ss = grep { $_->{name} ne '__any__' } @$ss;
+        delete $top->{$_} for qw(before transitions on);
         $top->{$_} //= $any->{$_} for keys %$any;
         $top->{$_} = $any->{$_} for qw(ignore delay);
     }
@@ -227,8 +269,6 @@ sub _resolve_target {
     croak "unable to resolve transition target '$target' from state '$name'";
 }
 
-my $ignore_cb = sub {};
-
 sub generate_class {
     my $self = shift;
     $self->_generate_state($self->{top});
@@ -265,24 +305,61 @@ sub _generate_state {
         }
     }
 
-    for my $delay (@{$state->{delay}}) {
-        my $event = $delay;
+    for my $event (keys %{$state->{before}}) {
+        my $action = $state->{before}{$event};
+        my $sub = sub {
+            my $self = shift;
+            $self->maybe::next::method;
+            $self->$action;
+        };
         Class::StateMachine::install_method($class,
-                                            $event,
-                                            sub { shift->delay_until_next_state($event) },
+                                            "$event/before",
+                                            $sub,
                                             $name);
     }
-    for my $ignore (@{$state->{ignore}}) {
-        Class::StateMachine::install_method($class, $ignore, $ignore_cb, $name);
+
+    for my $event (@{$state->{delay}}) {
+        my $event1 = $event;
+        Class::StateMachine::install_method($class,
+                                            $event,
+                                            sub { shift->delay_until_next_state($event1) },
+                                            $name);
+    }
+
+    for my $event (keys %{$state->{on}}) {
+        my $action = $state->{on}{$event};
+        my $before = "$event/before";
+        my $sub = sub {
+            my $self = shift;
+            my $method = $self->can($before);
+            $self->method(@_) if $method;
+            $self->$action(@_);
+        };
+        Class::StateMachine::install_method($class, $event, $sub, $name);
+    }
+
+    for my $event (@{$state->{ignore}}) {
+        my $before = "$event/before";
+        my $sub = sub {
+            my $self = shift;
+            my $method = $self->can($before);
+            $self->$method(@_) if $method;
+        };
+        Class::StateMachine::install_method($class, $event, $sub, $name);
     }
 
     while (my ($target, $events) = each %{$state->{transitions_rev}}) {
-        my $target_state = $self->{states}{$target};
-        my $method = $target_state->{come_here_method} //= do {
-            my $target_name = $target_state->{name};
-            sub { shift->state($target_name) }
-        };
-        Class::StateMachine::install_method($class, $_, $method, $name) for @$events;
+        my $target = $self->{states}{$target}{name};
+        for my $event (@$events) {
+            my $before = "$event/before";
+            my $sub = sub {
+                my $self = shift;
+                my $method = $self->can($before);
+                $self->$method(@_) if $method;
+                $self->state($target);
+            };
+            Class::StateMachine::install_method($class, $event, $sub, $name);
+        }
     }
 
     $self->_generate_state($_) for @{$state->{substates}};
@@ -302,6 +379,8 @@ sub _new {
                   parent => $parent,
                   substates => [],
                   transitions => {},
+                  before => {},
+                  on => {},
                   ignore => [],
                   delay => [] };
     bless $state, $class;

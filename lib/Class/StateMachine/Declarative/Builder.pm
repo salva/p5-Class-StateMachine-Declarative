@@ -8,12 +8,8 @@ use Scalar::Util ();
 
 use Class::StateMachine;
 *debug = \$Class::StateMachine::debug;
+*_debug = \&Class::StateMachine::Private::_debug;
 our $debug;
-
-sub _debug {
-    my $n = shift;
-    warn "@_\n" if $debug and $n;
-}
 
 sub new {
     my ($class, $target_class) = @_;
@@ -71,7 +67,7 @@ sub _add_state {
         my $k = shift @decl;
         my $method = $self->can("_handle_attr_$k") or $self->_bad_def($state, "bad declaration '$k'");
         if (defined (my $v = shift @decl)) {
-            _debug(16, "calling handler for attribute $k with value $v");
+            $debug and $debug & 16 and _debug($self, "calling handler for attribute $k with value $v");
             $method->($self, $state, $v);
         }
     }
@@ -150,7 +146,7 @@ sub _handle_attr_on {
     while (my ($event, $action) = each %$v) {
         if (defined $action) {
             $self->_ensure_event_is_free($state, $event);
-            $state->{before}{$event} = $action;
+            $state->{on}{$event} = $action;
         }
     }
 }
@@ -244,20 +240,20 @@ sub _resolve_transitions {
 
 sub _resolve_target {
     my ($self, $target, $path) = @_;
-    # _debug(32, "resolving target '$target' from '".join('/',@$path)."'");
+    # $debug and $debug & 32 and _debug($self, "resolving target '$target' from '".join('/',@$path)."'");
     if ($target =~ m|^__(\w+)__$|) {
         return $target;
     }
     if ($target =~ m|^/|) {
         return $target if $self->{states}{$target};
-        _debug(32, "absolute target '$target' not found");
+        $debug and $debug & 32 and _debug($self, "absolute target '$target' not found");
     }
     else {
         my @path = @$path;
         while (@path) {
             my $target_abs = join('/', @path, $target);
             if ($self->{states}{$target_abs}) {
-                _debug(32, "target '$target' from '".join('/',@$path)."' resolved as '$target_abs'");
+                $debug and $debug & 32 and _debug($self, "target '$target' from '".join('/',@$path)."' resolved as '$target_abs'");
                 return $target_abs;
             }
             pop @path;
@@ -280,7 +276,7 @@ sub _generate_state {
     my $name = $state->{name};
     my $parent = $state->{parent};
     my $parent_name = ($parent ? $parent->{name} : undef);
-    _debug(16, "generating subs for class $class, state $name, parent: ". ($parent_name // '<undef>'));
+    $debug and $debug & 16 and _debug("generating subs for class $class, state $name, parent: ". ($parent_name // '<undef>'));
 
     if ($parent and $parent_name ne '__any__') {
         Class::StateMachine::set_state_isa($class, $name, $parent_name);
@@ -297,21 +293,35 @@ sub _generate_state {
 
     if (!defined $state->{enter} and $name ne '__any__') {
         if (defined (my $jump = $state->{jump_abs})) {
+            my $name = $state->{name};
             my $jump_name = $self->{states}{$jump}{name};
+            $debug and $debug & 32 and _debug(__PACKAGE__, "installing handler for jump(=> $jump_name) at $class/$name");
             Class::StateMachine::install_method($class,
                                                 'enter_state',
-                                                sub { shift->state($jump_name) },
+                                                sub {
+                                                    my $self = shift;
+                                                    if ($self->state eq $name) {
+                                                        $debug and $debug & 64 and _debug($self, "jumping to state $jump_name");
+                                                        $self->state($jump_name)
+                                                    }
+                                                    else {
+                                                        $debug and $debug & 64 and
+                                                            _debug(64, "skipping jump to state $jump_name set for state $name");
+                                                    }
+                                                },
                                                 $name);
         }
     }
 
     for my $event (keys %{$state->{before}}) {
         my $action = $state->{before}{$event};
+        my $event1 = $event;
         my $sub = sub {
             my $self = shift;
             $self->maybe::next::method;
             $self->$action;
         };
+        $debug and $debug & 32 and _debug(__PACKAGE__, "installing handler for before($event1 => $action) at $class/$name");
         Class::StateMachine::install_method($class,
                                             "$event/before",
                                             $sub,
@@ -320,28 +330,37 @@ sub _generate_state {
 
     for my $event (@{$state->{delay}}) {
         my $event1 = $event;
+        $debug and $debug & 32 and _debug(__PACKAGE__, "installing handler for delay($event1) at $class/$name");
         Class::StateMachine::install_method($class,
                                             $event,
-                                            sub { shift->delay_until_next_state($event1) },
+                                            sub {
+                                                my $self = shift;
+                                                $debug and $debug & 64 and _debug($self, "event $event1 received (delay)");
+                                                $self->delay_until_next_state($event1) },
                                             $name);
     }
 
     for my $event (keys %{$state->{on}}) {
         my $action = $state->{on}{$event};
         my $before = "$event/before";
+        my $event1 = $event;
         my $sub = sub {
             my $self = shift;
+            $debug and $debug & 64 and _debug($self, "event $event1 received (on target: $action)");
             my $method = $self->can($before);
-            $self->method(@_) if $method;
+            $self->$method(@_) if $method;
             $self->$action(@_);
         };
+        $debug and $debug & 32 and _debug(__PACKAGE__, "installing handler for on($event1 => $action) at $class/$name");
         Class::StateMachine::install_method($class, $event, $sub, $name);
     }
 
     for my $event (@{$state->{ignore}}) {
         my $before = "$event/before";
+        my $event1 = $event;
         my $sub = sub {
             my $self = shift;
+            $debug and $debug & 64 and _debug($self, "event $event1 received (ignore)");
             my $method = $self->can($before);
             $self->$method(@_) if $method;
         };
@@ -352,12 +371,15 @@ sub _generate_state {
         my $target = $self->{states}{$target}{name};
         for my $event (@$events) {
             my $before = "$event/before";
+            my $event1 = $event;
             my $sub = sub {
                 my $self = shift;
+                $debug and $debug & 64 and _debug($self, "event $event1 received (transition target: $target)");
                 my $method = $self->can($before);
                 $self->$method(@_) if $method;
                 $self->state($target);
             };
+            $debug and $debug & 32 and _debug(__PACKAGE__, "installing handler for transition($event1 => $target) at $class/$name");
             Class::StateMachine::install_method($class, $event, $sub, $name);
         }
     }

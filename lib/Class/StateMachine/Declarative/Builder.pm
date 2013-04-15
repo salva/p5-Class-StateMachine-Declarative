@@ -319,6 +319,7 @@ sub _generate_state {
         my $sub = sub {
             my $self = shift;
             $self->maybe::next::method;
+            return if $Class::StateMachine::Private::state_changed{$self};
             $self->$action;
         };
         $debug and $debug & 32 and _debug(__PACKAGE__, "installing handler for before($event1 => $action) at $class/$name");
@@ -347,8 +348,10 @@ sub _generate_state {
         my $sub = sub {
             my $self = shift;
             $debug and $debug & 64 and _debug($self, "event $event1 received (on target: $action)");
-            my $method = $self->can($before);
-            $self->$method(@_) if $method;
+            if (my $method = $self->can($before)) {
+                $self->$method(@_);
+                return if $Class::StateMachine::Private::state_changed{$self};
+            }
             $self->$action(@_);
         };
         $debug and $debug & 32 and _debug(__PACKAGE__, "installing handler for on($event1 => $action) at $class/$name");
@@ -375,8 +378,10 @@ sub _generate_state {
             my $sub = sub {
                 my $self = shift;
                 $debug and $debug & 64 and _debug($self, "event $event1 received (transition target: $target)");
-                my $method = $self->can($before);
-                $self->$method(@_) if $method;
+                if (my $method = $self->can($before)) {
+                    $self->$method(@_);
+                    return if $Class::StateMachine::Private::state_changed{$self};
+                }
                 $self->state($target);
             };
             $debug and $debug & 32 and _debug(__PACKAGE__, "installing handler for transition($event1 => $target) at $class/$name");

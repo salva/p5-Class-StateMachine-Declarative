@@ -318,7 +318,7 @@ sub _generate_state {
         my $event1 = $event;
         my $sub = sub {
             my $self = shift;
-            if (my $method = $self->next::method) {
+            if (my $method = $self->next::can) {
                 $self->state_changed_on_call($method, $self) and return;
             }
             $self->$action;

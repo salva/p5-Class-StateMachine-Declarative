@@ -2,7 +2,7 @@ package Class::StateMachine::Declarative;
 
 sub _clean_eval { eval shift }
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 use 5.010;
 
@@ -41,7 +41,7 @@ __END__
 
 =head1 NAME
 
-Class::StateMachine::Declarative - Perl extension for blah blah blah
+Class::StateMachine::Declarative - Define state machines classes in a high level declarative fashion
 
 =head1 SYNOPSIS
 

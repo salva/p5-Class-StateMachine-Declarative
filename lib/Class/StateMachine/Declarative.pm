@@ -2,7 +2,7 @@ package Class::StateMachine::Declarative;
 
 sub _clean_eval { eval shift }
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use 5.010;
 
@@ -209,7 +209,7 @@ L<Class::StateMachine>.
 
 =head1 COPYRIGHT AND LICENSE
 
-Copyright (C) 2011-2013 by Salvador FandiE<ntilde>o <sfandino@yahoo.com>
+Copyright (C) 2011-2014 by Salvador FandiE<ntilde>o <sfandino@yahoo.com>
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself, either Perl version 5.12.4 or,

@@ -1,5 +1,8 @@
 Revision history for Perl extension Class::StateMachine::Declarative.
 
+0.03  May 6, 2014
+        - fix spelling errors
+
 0.02  Aug 12, 2013
         - documentation fixes 
 
